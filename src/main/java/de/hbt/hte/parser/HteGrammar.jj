@@ -1,0 +1,934 @@
+/*
+ * (C) Copyright 2018 Kai Burjack
+
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+
+ The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ THE SOFTWARE.
+
+ */
+options
+{
+  JDK_VERSION = "1.5";
+  SUPPORT_CLASS_VISIBILITY_PUBLIC = true;
+  STATIC = false;
+}
+
+PARSER_BEGIN(HteParser)
+package de.hbt.hte.parser;
+import java.util.*;
+import de.hbt.hte.ast.*;
+import de.hbt.hte.rt.*;
+
+@ SuppressWarnings(
+{
+  "unused", "serial"
+}
+
+) public class HteParser
+{
+  private Profile profile;
+
+  private Map < String, String > metaAttributes = new HashMap < String, String > ();
+
+  public HteParser(Profile profile, java.io.InputStream stream)
+  {
+    this (stream, "UTF-8");
+    this.profile = profile;
+  }
+
+  public HteParser(Profile profile, java.io.Reader stream)
+  {
+    this (stream);
+    this.profile = profile;
+  }
+
+  /**
+   * Activate the given lexical state.
+   */
+  public void switchTo(int lexicalState)
+  {
+    token_source.SwitchTo(lexicalState);
+  }
+
+  /**
+   * Set the given Profile.
+   */
+  public void setProfile(Profile profile)
+  {
+    this.profile = profile;
+  }
+
+  /**
+   * @return the Profile
+   */
+  public Profile getProfile()
+  {
+    return this.profile;
+  }
+}
+
+PARSER_END(HteParser)
+
+TOKEN_MGR_DECLS :
+{
+  private int parenthesisNesting;
+
+  private int braceNesting;
+
+  private boolean inExpressionNode;
+}
+
+TOKEN :
+{
+  < #BLANK : [ " ", "\t", "\n", "\r" ] >
+| < #START_TAG : "<#" >
+| < #END_TAG : "</#" >
+| < #CLOSE_TAG1 : (< BLANK >)* ">" >
+| < #CLOSE_TAG2 : (< BLANK >)* ("/")? ">" >
+| < EXPR_BEGIN :
+    "${"
+  | "@{" >
+  {
+    inExpressionNode = true;
+    braceNesting = 1;
+    SwitchTo(EXPRESSION);
+  }
+| < IF : < START_TAG > "if" < BLANK >> : EXPRESSION
+| < ELSE_IF : < START_TAG > "elseif" < BLANK >> : EXPRESSION
+| < ELSE : < START_TAG > "else" < CLOSE_TAG2 >> : DEFAULT
+| < END_IF : < END_TAG > "if" < CLOSE_TAG1 >> : DEFAULT
+| < LIST : < START_TAG > "list" < BLANK >> : EXPRESSION
+| < END_LIST : < END_TAG > "list" < CLOSE_TAG1 >> : DEFAULT
+| < ASSIGN : < START_TAG > "assign" < BLANK >> : EXPRESSION
+| < PRINTABLE_CHARS :
+    (
+      "$"
+    | "@"
+    | "#"
+    | "<"
+    | "["
+    | "{"
+    )
+  | (~[ "@", "$", "<", "#", "[", "{" ])+ >
+}
+
+SKIP :
+{
+  < COMMENT_START : < START_TAG > "--" > : IN_MULTILINE_COMMENT
+}
+
+< IN_MULTILINE_COMMENT >
+SKIP :
+{
+  < COMMENT_END :
+    "-->"
+    (
+      "\n"
+    | "\r"
+    | "\r\n"
+    )? >
+  : DEFAULT
+| < ~[ ] >
+}
+
+< EXPRESSION, IN_PAREN >
+SKIP :
+{
+  " "
+| "\r"
+| "\t"
+| "\n"
+| < "//" (~[ "\n", "\r" ])*
+    (
+      "\n"
+    | "\r"
+    | "\r\n"
+    ) >
+| < "/*" (~[ "*" ])* "*"
+    (
+      "*"
+    | ~[ "*", "/" ] (~[ "*" ])* "*"
+    )*
+    "/"
+    (
+      "\n"
+    | "\r"
+    | "\r\n"
+    )? >
+}
+
+< EXPRESSION, IN_PAREN >
+TOKEN :
+{
+  < COLON : ":" >
+| < EQ : "=" >
+}
+
+< EXPRESSION, IN_PAREN >
+TOKEN : /* OPERATORS */
+{
+  < OP :
+    (
+      "+"
+    | "-"
+    | "*"
+    | "**"
+    | "/"
+    | "%"
+    | "|"
+    | "||"
+    | "&"
+    | "&&"
+    | "$"
+    | "="
+    | "=="
+    | "==="
+    | "!="
+    | "!=="
+    | "<"
+    | "~"
+    | "^"
+    | "=~"
+    | "==~"
+    | "<="
+    | ">="
+    | "<<"
+    | ">>"
+    | ">>>"
+    ) >
+| < PROP_START : "${" > : PROPREF
+| < BANG : "!" >
+| < LPAR : "(" >
+  {
+    parenthesisNesting++;
+    SwitchTo(IN_PAREN);
+  }
+| < RPAR : ")" >
+  {
+    parenthesisNesting--;
+    if (parenthesisNesting == 0) SwitchTo(EXPRESSION);
+  }
+| < COMMA : "," >
+| < DOT : "." >
+| < LBRACKET : "[" >
+| < RBRACKET : "]" >
+| < COLON2 : "::" >
+| < LBRACE : "{" >
+  {
+    braceNesting++;
+  }
+| < RBRACE : "}" >
+  {
+    braceNesting--;
+    if (inExpressionNode && braceNesting == 0)
+    {
+      inExpressionNode = false;
+      SwitchTo(DEFAULT);
+    }
+  }
+| < ARROW : "->" >
+| < QUEST : "?" >
+| < QUEST2 : "??" >
+| < ELVIS : "?:" >
+| < AS : "as" >
+| < IN : "in" >
+| < IS : "is" >
+| < EXPR_IF : "if" >
+| < EXPR_THEN : "then" >
+| < EXPR_ELSE : "else" >
+}
+
+< EXPRESSION >
+TOKEN :
+{
+  < DIRECTIVE_END : ">" >
+  {
+    if (inExpressionNode) matchedToken.kind = OP;
+    else SwitchTo(DEFAULT);
+  }
+| < EMPTY_DIRECTIVE_END : "/>" > : DEFAULT
+}
+
+< EXPRESSION, IN_PAREN >
+TOKEN :
+{
+  < #NOZERODECIMALDIGIT : [ "1"-"9" ] >
+| < #DECIMALDIGIT : [ "0"-"9" ] >
+| < #BINDIGIT : [ "0", "1" ] >
+| < #HEXDIGIT : [ "0"-"9", "a"-"f", "A"-"F" ] >
+| < #INT :
+    (
+      "0"
+    | < NOZERODECIMALDIGIT >
+      (
+        ("_")* < DECIMALDIGIT >
+      )*
+    ) >
+| < #FREST :
+    < DECIMALDIGIT >
+    (
+      ("_")* < DECIMALDIGIT >
+    )* >
+| < INTLITERAL : < INT >>
+  {
+    matchedToken.image = matchedToken.image.replace("_", "");
+  }
+| < LONGLITERAL : < INT > [ "l", "L" ] >
+  {
+    String ll = matchedToken.image.replace("_", "");
+    matchedToken.image = ll.substring(0, ll.length() - 1);
+  }
+| < DOUBLELITERAL :
+    (< INT >)? "." (< FREST >)+ ([ "d", "D" ])?
+  | < INT > "." (< FREST >)* ([ "d", "D" ])?
+  | < INT > [ "d", "D" ] >
+  {
+    String dl = matchedToken.image.replace("_", "");
+    if (dl.endsWith("d") || dl.endsWith("D"))
+    {
+      dl = dl.substring(0, dl.length() - 1);
+    }
+    matchedToken.image = dl;
+  }
+| < FLOATLITERAL :
+    (< INT >)? "." (< FREST >)+ [ "f", "F" ]
+  | < INT > "." (< FREST >)* [ "f", "F" ]
+  | < INT > [ "f", "F" ] >
+  {
+    String fl = matchedToken.image.replace("_", "");
+    if (fl.endsWith("f") || fl.endsWith("F"))
+    {
+      fl = fl.substring(0, fl.length() - 1);
+    }
+    matchedToken.image = fl;
+  }
+| < TRUE : "true" >
+| < FALSE : "false" >
+| < QIDENTIFIER : "`" (~[ "`" ])+ "`" >
+  {
+    String to = matchedToken.image;
+    /* Get rid of start and end quote */
+    to = to.substring(1, to.length() - 1);
+    matchedToken.image = to;
+  }
+| < #ESCAPED_CHAR : "\\" [ "n", "t", "r", "\\", "'", "\"" ] >
+| < STRING :
+    "\""
+    (
+      (~[ "\"", "\\" ])
+    | < ESCAPED_CHAR >
+    )*
+    "\"" >
+  {
+    String t = matchedToken.image;
+    /* Get rid of start and end quote */
+    t = t.substring(1, t.length() - 1);
+    /* Unescape escape sequences */
+    t = StringUtils.unescapeJava(t);
+    matchedToken.image = t;
+  }
+}
+
+< PROPREF >
+TOKEN :
+{
+  < PROP_END : < RBRACE >> : EXPRESSION
+| < PROP_NAME : < STRING >>
+  {
+    String pn = matchedToken.image;
+    /* Get rid of start and end quote */
+    pn = pn.substring(1, pn.length() - 1);
+    /* Unescape escape sequences */
+    pn = StringUtils.unescapeJava(pn);
+    matchedToken.image = pn;
+  }
+}
+
+< PROPREF >
+TOKEN :
+{
+  < #ID_WITH_DASHES : [ "_", "a"-"z", "A"-"Z" ] ([ "-", "_", "0"-"9", "a"-"z", "A"-"Z" ])* >
+| < FQ_ID : < ID_WITH_DASHES > ("." < ID_WITH_DASHES >)* >
+}
+
+< EXPRESSION, IN_PAREN >
+TOKEN :
+{
+  < IDENTIFIER : [ "_", "a"-"z", "A"-"Z" ] ([ "_", "0"-"9", "a"-"z", "A"-"Z" ])* >
+}
+
+< IN_PAREN >
+TOKEN :
+{
+  < OP2 : ">" >
+}
+
+TemplateNode templateNode() :
+{
+  Node n;
+}
+{
+  n = sequence(false) < EOF >
+  {
+    TemplateNode tn = new TemplateNode(metaAttributes, n);
+    tn.location(n.startLine, n.startColumn, n.endLine, n.endColumn);
+    return tn;
+  }
+}
+
+Node sequence(boolean trim) :
+{
+  Token t;
+  SequenceNode n = new SequenceNode();
+  Node e = null;
+  boolean merge = false, first = true, firstNode = true;
+}
+{
+  (
+    t = < PRINTABLE_CHARS >
+    {
+      if (merge)
+      {
+        /* The previous node was also a TextNode, so merge the texts */
+        TextNode tn = (TextNode) e;
+        tn.append(t.image);
+        tn.location(tn.startLine, tn.startColumn, t.endLine, t.endColumn);
+      }
+      else
+      {
+        /* The previous node was not a TextNode, create a new one */
+        String text = t.image;
+        if (first && trim || !trim)
+        {
+          /* Strip off unnecessary whitespaces */
+          text = AstUtils.stripLeft(text);
+        }
+        if (text != null && text.length() > 0)
+        {
+          e = new TextNode(text);
+          e.location(t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+          first = false;
+          n.add(e);
+          merge = true;
+        }
+      }
+    }
+  |
+    (
+      e = expressionNode()
+    | e = branchNode()
+    | e = listNode()
+    | e = assignNode()
+    )
+    {
+      merge = false;
+      if (e != null)
+      {
+        n.add(e);
+      	firstNode = false;
+      }
+    }
+  )*
+  {
+    if (n.isEmpty())
+    {
+      return null;
+    }
+    else if (n.size() == 1)
+    {
+      return n.get(0);
+    }
+    return n;
+  }
+}
+
+Token id() :
+{
+  Token t;
+}
+{
+  (
+    t = < IDENTIFIER >
+  | t = < QIDENTIFIER >
+  )
+  {
+    return t;
+  }
+}
+
+Node expressionNode() :
+{
+  Expression expr;
+  Token b, e, as = null;
+}
+{
+  b = < EXPR_BEGIN > expr = expression() (< AS > as = id())? e = < RBRACE >
+  {
+    ExpressionNode n = new ExpressionNode(expr, as);
+    n.location(b.beginLine, b.beginColumn, e.endLine, e.endColumn);
+    return n;
+  }
+}
+
+Token LooseDirectiveEnd() :
+{
+  Token t;
+}
+{
+  (
+    t = < DIRECTIVE_END >
+  | t = < EMPTY_DIRECTIVE_END >
+  )
+  {
+    return t;
+  }
+}
+
+BranchNode branchNode() :
+{
+  Expression cond;
+  Node block;
+  BranchNode n, bn;
+  Token t, t2;
+}
+{
+  t = < IF > cond = expression() t2 = < DIRECTIVE_END > block = sequence(true)
+  {
+    n = new BranchNode(cond, block);
+    if (block != null) {   
+      n.location(t.beginLine, t.beginColumn, block.endLine, block.endColumn);
+    } else {
+      n.location(t.beginLine, t.beginColumn, t2.endLine, t2.endColumn);
+    }
+    bn = n;
+  }
+  (
+    t = < ELSE_IF > cond = expression() t2 = LooseDirectiveEnd() block = sequence(true)
+    {
+      BranchNode elif = new BranchNode(cond, block);
+      bn.elseCase = elif;
+      if (block != null) {
+        elif.location(t.beginLine, t.beginColumn, block.endLine, block.endColumn);
+        bn.location(bn.startLine, bn.startColumn, block.endLine, block.endColumn);
+      } else {
+        elif.location(t.beginLine, t.beginColumn, t2.endLine, t2.endColumn);
+        bn.location(bn.startLine, bn.startColumn, t2.endLine, t2.endColumn);
+      }
+      bn = elif;
+    }
+  )*
+  (
+    t = < ELSE > block = sequence(true)
+    {
+      bn.elseCase = block;
+      if (block != null) {
+        bn.location(bn.startLine, bn.startColumn, block.endLine, block.endColumn);
+      } else {
+        bn.location(bn.startLine, bn.startColumn, t.endLine, t.endColumn);
+      }
+    }
+  )?
+  t = < END_IF >
+  {
+    bn.location(bn.startLine, bn.startColumn, t.endLine, t.endColumn);
+    return n;
+  }
+}
+
+ForEachNode listNode() :
+{
+  SymbolDecl counter;
+  Expression collection;
+  ForEachNode ret;
+  Node block, elseBlock = null;
+  Token t, t2;
+}
+{
+  t = < LIST > collection = expression() < AS > counter = symbdecl() < DIRECTIVE_END > block = sequence(true) (< ELSE > elseBlock = sequence(true))? t2 = < END_LIST >
+  {
+    ret = new ForEachNode(counter, collection, block);
+    ret.location(t.beginLine, t.beginColumn, t2.endLine, t2.endColumn);
+    if (elseBlock != null)
+      ret.elseBody = elseBlock;
+    return ret;
+  }
+}
+
+Node assignNode() :
+{
+  Expression e;
+  RecordConstructorExpression rce;
+  Token t, t2;
+}
+{
+  t = < ASSIGN > rce = recordctorcontent() t2 = < DIRECTIVE_END >
+  {
+    AssignNode n = new AssignNode(rce);
+    return n;
+  }
+}
+
+RecordConstructorExpression recordctorcontent() :
+{
+  RecordConstructorExpression res = new RecordConstructorExpression();
+  Token id;
+  Expression val;
+  SymbolDef def;
+}
+{
+  (
+    id = id() < EQ > val = expression() (< COMMA >)?
+    {
+      def = new SymbolDef(id, val);
+      def.location(id.beginLine, id.beginColumn, val.endLine, val.endColumn);
+      res.add(def);
+    }
+    (
+      id = id() < EQ > val = expression()
+      {
+        def = new SymbolDef(id, val);
+        def.location(id.beginLine, id.beginColumn, val.endLine, val.endColumn);
+        res.add(def);
+      }
+      (< COMMA >)?
+    )*
+  )?
+  {
+    return res;
+  }
+}
+
+Expression expression() :
+{
+  Expression r;
+}
+{
+  r = conditional()
+  {
+    return r;
+  }
+}
+
+/**
+ * Equivalent of Java's ternary operator ?:
+ */
+Expression conditional() :
+{
+  Expression cond, thenExpr, elseExpr;
+  Token t;
+  Expression ret;
+}
+{
+  (
+    t = < EXPR_IF > cond = expression() < EXPR_THEN > thenExpr = expression() < EXPR_ELSE > elseExpr = expression()
+    {
+      ret = new ConditionalExpression(cond, thenExpr, elseExpr);
+      return ret;
+    }
+  | ret = binary()
+    {
+      return ret;
+    }
+  )
+}
+
+SymbolRef symbrefunop() :
+{
+  SymbolRef symb;
+  Token name;
+}
+{
+  /* The operator is a grammar-predefined symbol */
+  (
+    name = < OP >
+  | name = < OP2 >
+  | name = < BANG >
+  )
+  {
+    symb = new SymbolRef(name);
+    symb.location(name.beginLine, name.beginColumn, name.endLine, name.endColumn);
+  }
+  {
+    return symb;
+  }
+}
+
+SymbolRef symbrefbinop() :
+{
+  SymbolRef symb;
+  Token name;
+}
+{
+  (
+    /* The operator is a grammar-predefined symbol */
+    (
+      name = < OP >
+    | name = < OP2 >
+    )
+    /* The operator is any identifier */
+  | name = id()
+  )
+  {
+    symb = new SymbolRef(name);
+    symb.location(name.beginLine, name.beginColumn, name.endLine, name.endColumn);
+  }
+  {
+    return symb;
+  }
+}
+
+SymbolDecl symbdecl() :
+{
+  SymbolDecl symb;
+  Token name;
+}
+{
+  name = id()
+  {
+    symb = new SymbolDecl(name);
+    symb.location(name.beginLine, name.beginColumn, name.endLine, name.endColumn);
+  }
+  {
+    return symb;
+  }
+}
+
+SymbolRef symbref() :
+{
+  SymbolRef symb;
+  Token name;
+}
+{
+  name = id()
+  {
+    symb = new SymbolRef(name);
+    symb.location(name.beginLine, name.beginColumn, name.endLine, name.endColumn);
+  }
+  {
+    return symb;
+  }
+}
+
+Expression binary() :
+{
+  Expression res, v;
+  Token op;
+  BinaryExpression be;
+  SymbolRef symb;
+}
+{
+  res = postfixedExpr()
+  (
+    /* If the next thing looks like a reference to a binary operator, use that! */
+    LOOKAHEAD(symbrefbinop() binary())
+    symb = symbrefbinop() v = binary()
+    {
+      be = new BinaryExpression(res, symb, v);
+      be.location(res.startLine, res.startColumn, v.endLine, v.endColumn);
+      res = AstUtils.repairRightAssoc(profile, be);
+      res.location(res.startLine, res.startColumn, v.endLine, v.endColumn);
+    }
+  )?
+  {
+    return res;
+  }
+}
+
+Expression binaryrest(Expression left) :
+{
+  SymbolRef symb;
+  Expression res, right;
+}
+{
+  symb = symbrefbinop() right = postfixedExpr()
+  {
+    res = new BinaryExpression(left, symb, right);
+    res = AstUtils.repairLeftAssoc(profile, res);
+    res.location(left.startLine, left.startColumn, right.endLine, right.endColumn);
+    return res;
+  }
+}
+
+Expression postfixedExpr() :
+{
+  Expression prim, ret, e, e2;
+  Token t;
+}
+{
+  prim = primary()
+  {
+    ret = prim;
+  }
+  (
+    (
+      ret = attributeSelect(ret)
+    | ret = index(ret)
+    )*
+  )
+  (
+    t = < ELVIS > e2 = primary()
+    {
+      e = new ExpressionWithDefault(ret, e2);
+      ret = e;
+      ret.location(prim.startLine, prim.startColumn, e2.endLine, e2.endColumn);
+    }
+  )?
+  {
+    return ret;
+  }
+}
+
+List < Expression > arglist() :
+{
+  Expression arg, arg2;
+  List < Expression > list = new ArrayList < Expression > ();
+}
+{
+  (
+    arg = expression()
+    {
+      list.add(arg);
+    }
+    (
+      < COMMA > arg2 = expression()
+      {
+        list.add(arg2);
+      }
+    )*
+  )?
+  {
+    return list;
+  }
+}
+
+Expression attributeSelect(Expression left) :
+{
+  SymbolRef ref;
+  Token t, l;
+  boolean nullSafe = false;
+  Expression res;
+  List < Expression > list;
+}
+{
+  (
+    l = < DOT >
+  | l = < QUEST > < DOT >
+    {
+      nullSafe = true;
+    }
+  )
+  ref = symbref()
+  {
+    AttributeSelectExpression ase;
+    ase = new AttributeSelectExpression(left, ref, nullSafe);
+    res = ase;
+    res.location(l.beginLine, l.beginColumn, ref.endLine, ref.endColumn);
+  }
+  (
+    < LPAR > list = arglist() t = < RPAR >
+    {
+        res = new MethodCallExpression(left, ref, list);
+        res.location(l.beginLine, l.beginColumn, t.endLine, t.endColumn);
+    }
+  )?
+  {
+    return res;
+  }
+}
+
+Expression index(Expression left) :
+{
+  Expression e;
+  Token l, r;
+}
+{
+  l = < LBRACKET > e = expression() r = < RBRACKET >
+  {
+    Expression res = new IndexExpression(left, e);
+    res.location(l.beginLine, l.beginColumn, r.endLine, r.endColumn);
+    return res;
+  }
+}
+
+LiteralExpression literal() :
+{
+  Token t;
+  LiteralExpression res;
+}
+{
+  (
+    t = < TRUE >
+    {
+      res = new LiteralExpression(Boolean.TRUE);
+    }
+  | t = < FALSE >
+    {
+      res = new LiteralExpression(Boolean.FALSE);
+    }
+  | t = < INTLITERAL >
+    {
+      res = new LiteralExpression(Integer.valueOf(t.image));
+    }
+  | t = < LONGLITERAL >
+    {
+      res = new LiteralExpression(Long.valueOf(t.image));
+    }
+  | t = < DOUBLELITERAL >
+    {
+      res = new LiteralExpression(Double.valueOf(t.image));
+    }
+  | t = < FLOATLITERAL >
+    {
+      res = new LiteralExpression(Float.valueOf(t.image));
+    }
+  | t = < STRING >
+    {
+      res = new LiteralExpression(t.image);
+    }
+  )
+  {
+    res.location(t.beginLine, t.beginColumn, t.endLine, t.endColumn);
+    return res;
+  }
+}
+
+Expression primary() :
+{
+  Token l, r, name;
+  Expression v, res;
+  SymbolRef symb;
+  List < Expression > list;
+}
+{
+  (
+    res = literal()
+  | symb = symbrefunop() v = primary()
+    {
+      res = new UnaryExpression(symb, v);
+      res.location(symb.startLine, symb.startColumn, v.endLine, v.endColumn);
+    }
+  | res = symbref()
+  | l = < LPAR > v = expression() r = < RPAR >
+    {
+      res = new ParenthesizedExpression(v);
+      res.location(l.beginLine, l.beginColumn, r.beginLine, r.beginColumn);
+    }
+  )
+  {
+    return res;
+  }
+}
